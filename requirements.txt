@@ -1,0 +1,7 @@
+# Installed into /opt/bebop/venv (a --system-site-packages venv --
+# pygame-ce can't coexist with the system pygame the rest of the fleet
+# depends on, so bebop gets its own environment). evdev/numpy/mutagen/
+# Pillow/psutil are inherited from apt-installed system packages, not
+# listed here.
+pygame-ce==2.5.8
+python-mpd2==3.1.1

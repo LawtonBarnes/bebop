@@ -1,0 +1,48 @@
+# bebop machine/hardware configuration. Static, hand-edited -- the
+# separate settings.ini next to this file holds live user preferences
+# (shuffle/repeat/text color) that bebop itself reads and writes as you
+# use the Settings menu.
+
+[display]
+# NTSC composite mode, matching bars.py/loudness.py/channel38.py's real
+# hardware resolution exactly -- FrameBuffer.write_surface() does no
+# scale/stretch at all when the canvas already matches the real fb0
+# geometry, same reasoning as those apps' own FRAME_W/FRAME_H.
+width = 720
+height = 480
+# fraction of each dimension reserved as border on every menu screen, to
+# compensate for CRT overscan -- split both sides, same convention as
+# bars.py/channel38.py's UNDERSCAN. Album Art Mode deliberately ignores
+# this and always centers on the full frame.
+safe_area = 0.10
+
+[font]
+path = "assets/ChicagoKare-Regular.ttf"
+
+[splash]
+path = "assets/splash.png"
+seconds = 2.5
+
+[mpd]
+host = "localhost"
+port = 6600
+# Local mount for now (USB drive plugged directly into production for
+# dev/testing). Becomes an NFS-mounted path once the library moves to
+# living on one McBrain puppet and being shared to the others.
+music_directory = "/mnt/bebop"
+
+[artwork]
+fallback_filenames = ["cover.jpg", "cover.png", "folder.jpg", "folder.png"]
+size = 400
+
+[input]
+# Documents the key names bebop listens for -- both the physical remote
+# (evdev, dongle plugged directly into production for now) and STRINGS's
+# virtual relay device (once on McBrain) send standard evdev key names,
+# so no separate mapping code is needed, this is just a reference.
+up = "KEY_UP"
+down = "KEY_DOWN"
+left = "KEY_LEFT"
+right = "KEY_RIGHT"
+select = "KEY_ENTER"
+back = "KEY_BACK"
