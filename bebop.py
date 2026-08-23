@@ -206,6 +206,24 @@ class BebopApp:
             # hamburger still falls through to the normal quit case
             # right below, matching every other app's convention.
             self._toggle_album_art()
+        elif code in (ecodes.KEY_UP, ecodes.KEY_DOWN) and isinstance(self.current_screen, (NowPlayingScreen, AlbumArtScreen)):
+            # Up/Down also toggle Album Art Mode here (2026-08-23), same
+            # as Hamburger above -- while controlling bebop remotely via
+            # MP's SCRUTE relay, Hamburger never actually reaches a
+            # puppet at all (SCRUTE intercepts it globally to jump
+            # itself to Select Target, unconditionally, by design), so
+            # Album Art Mode was completely unreachable in the fleet's
+            # real usage pattern (puppets have no local input, control
+            # is always via the relay). Costs nothing: Up/Down and
+            # Left/Right already do the exact same thing on
+            # NowPlayingScreen (previous/next track -- Left/Right's
+            # bigger step value never mattered here, see move() below),
+            # and AlbumArtScreen's own move() is already a no-op for
+            # every direction. Up/Down are already in STRINGS's
+            # RELAY_KEYS allowlist, so this reaches a controlled puppet
+            # where Hamburger can't. Hamburger's own toggle stays too,
+            # unchanged, for local use with a real remote.
+            self._toggle_album_art()
         elif code in (ecodes.KEY_Q, ecodes.KEY_ESC, ecodes.KEY_COMPOSE):
             return "quit"
         elif code == ecodes.KEY_UP:
