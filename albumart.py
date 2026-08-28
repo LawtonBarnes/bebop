@@ -14,6 +14,7 @@ the user's explicit request (2026-08-23) -- supersedes the brief's
 original plain-black fallback, since they supplied dedicated
 placeholder art.
 """
+import sys
 from pathlib import Path
 
 import pygame
@@ -40,7 +41,17 @@ class AlbumArtScreen:
         self.app = app
 
     def move(self, step):
-        pass  # no navigation inside Album Art Mode -- hamburger toggles back to Now Playing
+        # Left/Right -- previous/next track, same as NowPlayingScreen's
+        # move() (2026-08-28, remote-control redesign: Left/Right skip
+        # tracks on both Now Playing and Album Art). Only the sign
+        # matters, not bebop.py's page-sized step value.
+        try:
+            self.app.mpd.call("previous" if step < 0 else "next")
+        except MPDError as exc:
+            print(f"MPD previous/next failed: {exc}", file=sys.stderr)
+
+    def page_step(self):
+        return 1  # move() only looks at the sign, magnitude is irrelevant here
 
     def select(self, app):
         pass

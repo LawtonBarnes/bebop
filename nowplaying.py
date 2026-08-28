@@ -38,19 +38,15 @@ class NowPlayingScreen:
         except MPDError as exc:
             print(f"MPD previous/next failed: {exc}", file=sys.stderr)
 
+    def page_step(self):
+        return 1  # move() only looks at the sign, magnitude is irrelevant here
+
     def select(self, app):
-        # Enter -- play/pause. The brief's "OK toggles Now Playing /
-        # Album Art Mode" is on the hamburger button instead (see
-        # bebop.py's handle_keycode) -- Enter/OK was needed for
-        # play/pause, so the toggle moved to the other free button.
-        try:
-            status = app.mpd.call("status")
-            if status.get("state") == "play":
-                app.mpd.call("pause", 1)
-            else:
-                app.mpd.call("play")
-        except MPDError as exc:
-            print(f"MPD play/pause failed: {exc}", file=sys.stderr)
+        # Enter -- play/pause, same action as Down (see bebop.py's
+        # App._toggle_play_pause -- shared there since Down also drives
+        # play/pause on AlbumArtScreen, which has no Enter handling of
+        # its own).
+        app._toggle_play_pause()
 
     def render(self, renderer, canvas, color):
         f = renderer.font

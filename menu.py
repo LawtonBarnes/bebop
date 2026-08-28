@@ -12,6 +12,7 @@ equivalent concept of, so bebop's settings.ini is the durable default
 for that (see apply_startup_playback_settings).
 """
 import random
+import re
 import shutil
 import sys
 
@@ -20,7 +21,7 @@ from mpd import MPDError
 from config import REPEAT_MODES, SHUFFLE_MODES, TEXT_COLORS
 from nowplaying import NowPlayingScreen
 
-VERSION = "1.0"  # bebop's own version, distinct from each app's VERSION convention elsewhere in the fleet
+VERSION = "1.1"  # bebop's own version, distinct from each app's VERSION convention elsewhere in the fleet
 
 ROOT_ITEMS = ["Playlists", "Artists", "Songs", "Settings"]
 SETTINGS_ITEMS = ["Shuffle", "Repeat", "Text Color", "About"]
@@ -40,14 +41,28 @@ class ListScreen:
         self.scroll = 0
         self.on_select = on_select  # callback(app, index) or None
         self.chevrons = chevrons
+        # Real row count as of the last render() -- see page_step().
+        # 1 as a startup default (before the first render) is harmless:
+        # render() always runs at least once, right after this screen
+        # is pushed, before any keypress could reach move().
+        self.visible_rows = 1
 
     def move(self, step):
-        # Up/Down send step=+-1; Left/Right send a larger page step
-        # (see bebop.py's PAGE_STEP) for fast-scrolling long lists --
-        # both just fall through the same wraparound move.
+        # Up/Down send step=+-1; Left/Right send page_step() (see
+        # below) -- both just fall through the same wraparound move.
         if not self.items:
             return
         self.selected = (self.selected + step) % len(self.items)
+
+    def page_step(self):
+        # Left/Right should land on a row that wasn't already on
+        # screen, not overshoot past a bunch of unseen rows -- moving
+        # by exactly the real visible row count guarantees the new
+        # selected index is at least one row beyond whichever edge of
+        # the old visible window it started from (2026-08-28, was a
+        # fixed step of 10 regardless of how many rows the CRT's actual
+        # font size/safe area fit, which is closer to 4).
+        return self.visible_rows
 
     def select(self, app):
         if self.on_select and self.items:
@@ -60,6 +75,7 @@ class ListScreen:
             canvas.blit(empty, (renderer.safe_rect.centerx - empty.get_width() // 2, top_y + 20))
             return
         visible_rows = max(1, (renderer.safe_rect.bottom - top_y) // renderer.ROW_H)
+        self.visible_rows = visible_rows
         if self.selected < self.scroll:
             self.scroll = self.selected
         elif self.selected >= self.scroll + visible_rows:
@@ -77,6 +93,9 @@ class InfoScreen:
 
     def move(self, step):
         pass
+
+    def page_step(self):
+        return 1  # move() ignores this entirely -- About has no Left/Right meaning
 
     def select(self, app):
         pass
@@ -164,30 +183,42 @@ def apply_startup_playback_settings(app):
     _apply_repeat_to_mpd(app, app.settings.repeat)
 
 
+def _build_playback_order(app, fallback_entries):
+    """Queue-build source for playback, per the active Shuffle mode
+    (2026-08-28 redesign) -- Off keeps whatever list you were browsing,
+    in its own natural order (an album's track-number order, a
+    playlist's saved order, or the Songs list's alphabetical order):
+    same as always, confirmed this is what should stay context-scoped.
+    Songs/Albums both discard fallback_entries and pull the WHOLE
+    library instead, regardless of which screen you selected from --
+    Shuffle is meant to be a single global mode, not something that
+    quietly narrows to "whatever album you happened to be browsing."
+    Songs mode doesn't shuffle the list itself -- MPD's own `random`
+    flag (see _apply_shuffle_to_mpd) does that at playback time, which
+    also gives real previous/next shuffle-history behavior for free
+    (it randomizes a play order once, then walks it, rather than
+    picking a fresh random song on every keypress)."""
+    if app.settings.shuffle == "off":
+        return fallback_entries
+    try:
+        library = [e for e in app.mpd.call("listallinfo") if "file" in e]
+    except MPDError as exc:
+        print(f"MPD listallinfo (shuffle queue) failed: {exc}", file=sys.stderr)
+        return fallback_entries
+    return _shuffle_by_album(library) if app.settings.shuffle == "albums" else library
+
+
 def _reshuffle_current_queue_and_play(app):
     """Called right after picking Shuffle -> Songs/Albums (not Off,
-    which shouldn't interrupt whatever's already playing) -- reorders
-    whatever's currently queued to match the new mode and starts
-    playing from the top, then jumps straight to Now Playing so the
-    effect is immediately audible/visible instead of leaving the user
-    on Settings wondering if anything happened (the user's own report,
-    2026-08-23). Falls back to the whole library (same source Songs
-    uses) if nothing was queued yet this session."""
-    try:
-        entries = app.mpd.call("playlistinfo")
-        if not entries:
-            entries = [e for e in app.mpd.call("listallinfo") if "file" in e]
-    except MPDError as exc:
-        print(f"MPD queue fetch for reshuffle failed: {exc}", file=sys.stderr)
-        return
-    if not entries:
-        return  # genuinely nothing to play (empty library)
-
-    if app.settings.shuffle == "albums":
-        ordered = _shuffle_by_album(entries)
-    else:
-        ordered = list(entries)
-        random.shuffle(ordered)
+    which shouldn't interrupt whatever's already playing) -- rebuilds
+    the queue from the whole library per the new mode (see
+    _build_playback_order) and starts playing from the top, then jumps
+    straight to Now Playing so the effect is immediately audible/
+    visible instead of leaving the user on Settings wondering if
+    anything happened (the user's own report, 2026-08-23)."""
+    ordered = _build_playback_order(app, [])
+    if not ordered:
+        return  # genuinely nothing to play (empty library, or the listallinfo call itself failed)
 
     try:
         app.mpd.call("clear")
@@ -226,13 +257,14 @@ def _set_text_color(app, name):
 def _queue_and_play(app, entries, index):
     """Shared by every "play this list of MPD entries starting at
     index" path (Songs, an album's tracks, a saved playlist) -- clears
-    the queue, loads the whole list (album-shuffled first if that's
-    the active Shuffle mode) so Left/Right (previous/next) on Now
-    Playing walks through the same order actually queued, and plays
-    the chosen song specifically (not just queue position `index`,
-    once shuffling may have moved it)."""
+    the queue, loads the whole list (per _build_playback_order's
+    Shuffle-mode-driven scope, not necessarily the same `entries` this
+    screen browsed) so Left/Right (previous/next) on Now Playing walks
+    through the same order actually queued, and plays the chosen song
+    specifically (not just queue position `index`, once shuffling may
+    have moved it -- or the queue source changed entirely)."""
     selected_file = entries[index]["file"]
-    ordered = _shuffle_by_album(entries) if app.settings.shuffle == "albums" else entries
+    ordered = _build_playback_order(app, entries)
     play_index = next(i for i, e in enumerate(ordered) if e["file"] == selected_file)
     try:
         app.mpd.call("clear")
@@ -249,9 +281,23 @@ def _song_label(entry):
     return entry.get("title") or entry["file"].rsplit("/", 1)[-1]
 
 
+_LEADING_PUNCT_RE = re.compile(r"^[^\w]+", re.UNICODE)
+
+
+def _alpha_sort_key(text):
+    # Strips leading punctuation (parens, quotes, ellipsis -- either the
+    # single "..." character or three ASCII periods, both non-word --
+    # etc.) so e.g. "(Don't Fear) The Reaper" sorts under D and "...And
+    # Justice for All" sorts under A, instead of every such title
+    # collating before the whole alphabet by its opening punctuation
+    # mark. Case-insensitive, matching build_songs_screen's existing
+    # convention.
+    return _LEADING_PUNCT_RE.sub("", text).lower()
+
+
 def build_artists_screen(app):
     try:
-        artists = sorted({d["artist"] for d in app.mpd.call("list", "artist") if d.get("artist")})
+        artists = sorted({d["artist"] for d in app.mpd.call("list", "artist") if d.get("artist")}, key=_alpha_sort_key)
     except MPDError as exc:
         print(f"MPD list artist failed: {exc}", file=sys.stderr)
         return ListScreen("Artists", [])
@@ -264,7 +310,7 @@ def build_artists_screen(app):
 
 def build_albums_screen(app, artist):
     try:
-        albums = sorted({d["album"] for d in app.mpd.call("list", "album", "artist", artist) if d.get("album")})
+        albums = sorted({d["album"] for d in app.mpd.call("list", "album", "artist", artist) if d.get("album")}, key=_alpha_sort_key)
     except MPDError as exc:
         print(f"MPD list album failed: {exc}", file=sys.stderr)
         return ListScreen(artist, [])
@@ -286,7 +332,7 @@ def _track_sort_key(entry):
     try:
         return (0, int(str(track).split("/")[0]))
     except ValueError:
-        return (1, entry.get("title", entry.get("file", "")))
+        return (1, _alpha_sort_key(entry.get("title", entry.get("file", ""))))
 
 
 def build_album_songs_screen(app, artist, album):
@@ -307,7 +353,7 @@ def build_album_songs_screen(app, artist, album):
 
 def build_playlists_screen(app):
     try:
-        names = sorted(p["playlist"] for p in app.mpd.call("listplaylists"))
+        names = sorted((p["playlist"] for p in app.mpd.call("listplaylists")), key=_alpha_sort_key)
     except MPDError as exc:
         print(f"MPD listplaylists failed: {exc}", file=sys.stderr)
         return ListScreen("Playlists", [])
@@ -328,19 +374,13 @@ def build_playlist_songs_screen(app, name):
     labels = [_song_label(e) for e in entries]
 
     def on_select(app, index):
-        # `load` (not clear+add) -- MPD's native "put this saved
-        # playlist's contents on the queue" command, simpler than
-        # rebuilding it file-by-file like _queue_and_play does for
-        # lists bebop assembled itself (Songs, an album) rather than
-        # loaded from a playlist MPD already has stored.
-        try:
-            app.mpd.call("clear")
-            app.mpd.call("load", name)
-            app.mpd.call("play", index)
-        except MPDError as exc:
-            print(f"MPD load playlist failed: {exc}", file=sys.stderr)
-            return
-        app.push_screen(NowPlayingScreen(app))
+        # Routed through the shared _queue_and_play (2026-08-28,
+        # replacing MPD's native `load` command) so a playlist
+        # selection respects Shuffle mode's scope the same as Songs/
+        # Album selection does -- with Songs/Albums shuffle active,
+        # this queues the whole library rather than just this
+        # playlist's own tracks. `load` had no way to do that.
+        _queue_and_play(app, entries, index)
 
     return ListScreen(name, labels, on_select=on_select, chevrons=False)
 
@@ -356,7 +396,7 @@ def build_songs_screen(app):
         print(f"MPD listallinfo failed: {exc}", file=sys.stderr)
         return ListScreen("Songs", [])
 
-    entries.sort(key=lambda e: (e.get("title") or e["file"]).lower())
+    entries.sort(key=lambda e: _alpha_sort_key(e.get("title") or e["file"]))
     labels = [_song_label(e) for e in entries]
 
     def on_select(app, index):

@@ -19,6 +19,7 @@ import fcntl
 import os
 import selectors
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, Settings  # noqa: E402
 from display import FrameBuffer, Renderer, pixel_aspect_correction  # noqa: E402
 from mpdclient import Client as MPDClientWrapper  # noqa: E402
+from mpd import MPDError  # noqa: E402
 from nowplaying import NowPlayingScreen  # noqa: E402
 from albumart import AlbumArtScreen  # noqa: E402
 import menu  # noqa: E402
@@ -44,12 +46,6 @@ VERSION = menu.VERSION
 KDSETMODE = 0x4B3A
 KD_TEXT = 0x00
 KD_GRAPHICS = 0x01
-
-# Left/Right send this as the move() step, instead of Up/Down's +-1 --
-# ListScreen uses the magnitude to page through long lists (1000+ songs)
-# faster than one row at a time; NowPlayingScreen only looks at the
-# sign (previous/next track), ignoring the magnitude.
-PAGE_STEP = 10
 
 # See bars.py/menu.py -- Home exits with this so STRINGS/the app-menu
 # knows to hand off to the health/app-menu screen instead of redrawing
@@ -183,6 +179,42 @@ class BebopApp:
         else:
             self.stack[-1] = AlbumArtScreen(self)
 
+    def _toggle_play_pause(self):
+        # Shared by Down (see handle_keycode) and Enter on
+        # NowPlayingScreen (nowplaying.py's select()) -- Down works on
+        # both Now Playing and Album Art, Enter only on Now Playing
+        # (Album Art's select() stays a no-op, matching its "no
+        # navigation" design).
+        try:
+            status = self.mpd.call("status")
+            if status.get("state") == "play":
+                self.mpd.call("pause", 1)
+            else:
+                self.mpd.call("play")
+        except MPDError as exc:
+            print(f"MPD play/pause failed: {exc}", file=sys.stderr)
+
+    def _set_line_out_mute(self, muted):
+        # VOL-/VOL+ are labeled for a normal volume knob, but this rig
+        # has no software volume control -- MPD's own mixer is
+        # deliberately "disabled" (see mpd.conf) so its ALSA PCM level
+        # IS the real line-level output, same fixed level set fleet-wide
+        # by set-audio-levels.service. So VOL- is really a MUTE button
+        # and VOL+ is really SOUND ON: toggling ALSA PCM's playback
+        # switch (mute) rather than its volume (which would need to be
+        # explicitly restored afterward and could drift from the
+        # enforced known-good level). MPD keeps playing/decoding the
+        # whole time -- this only silences the hardware output, unlike
+        # Down's play/pause which actually stops MPD. Card 0 always --
+        # this Pi has exactly one playback device (see aplay -l).
+        try:
+            subprocess.run(
+                ["amixer", "-c", "0", "sset", "PCM", "mute" if muted else "unmute"],
+                capture_output=True, check=True,
+            )
+        except (subprocess.CalledProcessError, OSError) as exc:
+            print(f"amixer PCM {'mute' if muted else 'unmute'} failed: {exc}", file=sys.stderr)
+
     # -- rendering ------------------------------------------------------
 
     def render(self):
@@ -206,24 +238,18 @@ class BebopApp:
             # hamburger still falls through to the normal quit case
             # right below, matching every other app's convention.
             self._toggle_album_art()
-        elif code in (ecodes.KEY_UP, ecodes.KEY_DOWN) and isinstance(self.current_screen, (NowPlayingScreen, AlbumArtScreen)):
-            # Up/Down also toggle Album Art Mode here (2026-08-23), same
-            # as Hamburger above -- while controlling bebop remotely via
-            # MP's SCRUTE relay, Hamburger never actually reaches a
-            # puppet at all (SCRUTE intercepts it globally to jump
-            # itself to Select Target, unconditionally, by design), so
-            # Album Art Mode was completely unreachable in the fleet's
-            # real usage pattern (puppets have no local input, control
-            # is always via the relay). Costs nothing: Up/Down and
-            # Left/Right already do the exact same thing on
-            # NowPlayingScreen (previous/next track -- Left/Right's
-            # bigger step value never mattered here, see move() below),
-            # and AlbumArtScreen's own move() is already a no-op for
-            # every direction. Up/Down are already in STRINGS's
-            # RELAY_KEYS allowlist, so this reaches a controlled puppet
-            # where Hamburger can't. Hamburger's own toggle stays too,
-            # unchanged, for local use with a real remote.
+        elif code == ecodes.KEY_UP and isinstance(self.current_screen, (NowPlayingScreen, AlbumArtScreen)):
+            # Up toggles Album Art Mode on these two screens (2026-08-23
+            # -- see git history for the original Hamburger-unreachable-
+            # via-relay rationale). Down used to share this binding too,
+            # but is now play/pause instead (2026-08-28, remote-control
+            # redesign) -- Left/Right take over track-skip duty on both
+            # screens below via move(), so Up/Down/Left/Right are fully
+            # dedicated to playback control here, matching a real
+            # iPod/media-remote layout.
             self._toggle_album_art()
+        elif code == ecodes.KEY_DOWN and isinstance(self.current_screen, (NowPlayingScreen, AlbumArtScreen)):
+            self._toggle_play_pause()
         elif code in (ecodes.KEY_Q, ecodes.KEY_ESC, ecodes.KEY_COMPOSE):
             return "quit"
         elif code == ecodes.KEY_UP:
@@ -231,9 +257,9 @@ class BebopApp:
         elif code == ecodes.KEY_DOWN:
             self.current_screen.move(1)
         elif code == ecodes.KEY_LEFT:
-            self.current_screen.move(-PAGE_STEP)
+            self.current_screen.move(-self.current_screen.page_step())
         elif code == ecodes.KEY_RIGHT:
-            self.current_screen.move(PAGE_STEP)
+            self.current_screen.move(self.current_screen.page_step())
         elif code in (ecodes.KEY_ENTER, ecodes.KEY_KPENTER, ecodes.BTN_LEFT, ecodes.BTN_MOUSE):
             self.current_screen.select(self)
         elif code == ecodes.KEY_BACK:
@@ -241,6 +267,14 @@ class BebopApp:
             # no-op at the root -- there's nowhere higher to go.
             # Exiting bebop entirely is Home/Q/Esc, handled above.
             self.pop_screen()
+        elif code == ecodes.KEY_VOLUMEDOWN:
+            # Mute the line-level output -- works from any screen, not
+            # just Now Playing/Album Art (see _set_line_out_mute).
+            self._set_line_out_mute(True)
+            return False
+        elif code == ecodes.KEY_VOLUMEUP:
+            self._set_line_out_mute(False)
+            return False
         else:
             return False
         return True
@@ -318,6 +352,22 @@ class BebopApp:
                 if live_screen:
                     self.render()
         finally:
+            # Pause MPD on the way out, for every exit path (Home/Q/Esc
+            # above, and a SIGTERM from STRINGS mid-restart/reassign via
+            # _handle_signal -- both funnel through this same finally
+            # block since the loop just drops out of `while running`).
+            # MPD is a separate daemon and keeps playing regardless of
+            # whether bebop itself is on screen, so without this,
+            # audio carries on through the terminal/next-app transition.
+            # Only pauses if actually playing -- calling "pause 1" while
+            # already stopped is an MPD protocol error, not a no-op.
+            try:
+                status = self.mpd.call("status")
+                if status.get("state") == "play":
+                    self.mpd.call("pause", 1)
+            except MPDError as exc:
+                print(f"MPD pause-on-exit failed: {exc}", file=sys.stderr)
+
             self.fb.close()
             if self.console_graphics_mode:
                 fcntl.ioctl(self.tty_fd, KDSETMODE, KD_TEXT)

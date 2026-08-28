@@ -21,7 +21,7 @@ path = "assets/ChicagoKare-Regular.ttf"
 
 [splash]
 path = "assets/splash.png"
-seconds = 2.5
+seconds = 5.0
 
 [mpd]
 host = "localhost"
