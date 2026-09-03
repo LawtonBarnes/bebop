@@ -10,6 +10,10 @@ audio decoding, library indexing, or playback-queue logic lives here;
 all of that is MPD's job. bebop just renders the screen and sends MPD
 commands.
 
+![Framebuffer capture -- Now Playing](./img/SCREEN_BEBOP_NOWPLAYING.png)
+
+![Framebuffer capture -- Album Art Mode](./img/SCREEN_BEBOP_ALBUMART.png)
+
 Status: v1.1, deployed fleet-wide as part of
 [McBrain](https://github.com/LawtonBarnes/mcbrain) (production + all 4
 puppets), assigned as the active app on `production` and `puppet2`.
