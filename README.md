@@ -10,9 +10,9 @@ audio decoding, library indexing, or playback-queue logic lives here;
 all of that is MPD's job. bebop just renders the screen and sends MPD
 commands.
 
-Status: v0.9, developed and tested end-to-end on `production`
-(192.168.68.71). Not yet installed on the McBrain puppet fleet --
-see **Known gaps** below.
+Status: v1.1, deployed fleet-wide as part of
+[McBrain](https://github.com/LawtonBarnes/mcbrain) (production + all 4
+puppets), assigned as the active app on `production` and `puppet2`.
 
 ## Hardware
 
@@ -21,13 +21,15 @@ see **Known gaps** below.
 - Analog audio out (`hw:0,0`, the Pi's headphone jack) at line level --
   volume is controlled by an external amp, not bebop or MPD
 - A remote control's D-pad/Select/Back, read via evdev -- either a
-  physical dongle plugged directly into the Pi, or (once installed on
-  a McBrain puppet) relayed live over HTTP by STRINGS's virtual input
+  physical dongle plugged directly into the Pi, or (when installed as a
+  McBrain puppet) relayed live over HTTP by
+  [STRINGS](https://github.com/LawtonBarnes/strings)'s virtual input
   device. bebop's own code is identical either way; no relay-specific
   logic exists here.
-- Music library: a USB thumb drive, currently mounted read-only,
-  world-readable, directly on `production` for development
-  (`/mnt/bebop`). See **Known gaps** for the McBrain network-share plan.
+- Music library: a single shared read-only network share
+  (`config.toml`'s `music_directory`, mounted at `/mnt/bebop` via CIFS/
+  Samba from whichever machine actually holds the USB drive), so every
+  fleet machine sees the same library without needing its own copy.
 
 ## Controls
 
@@ -87,7 +89,7 @@ composite pixels are what corrects it back to true proportions.)
 ## Setup
 
 ```
-sudo apt-get install -y mpd mpc python3-mutagen
+sudo apt-get install -y mpd mpc python3-mutagen cifs-utils
 python3 -m venv --system-site-packages /opt/bebop/venv
 /opt/bebop/venv/bin/pip install -r requirements.txt
 ```
@@ -97,6 +99,25 @@ apt-installed evdev/numpy/mutagen/Pillow/psutil -- only `pygame-ce`
 and `python-mpd2` are venv-local (`pygame-ce` can't coexist with the
 stock `pygame` the rest of the McBrain fleet's apps depend on, hence
 the dedicated venv at all).
+
+**Mount the shared library** (adjust the host IP/share name to your own
+setup -- whichever machine actually holds the USB drive needs a Samba
+share exported as `bebop-music`):
+
+```
+sudo tee -a /etc/fstab > /dev/null << 'EOF'
+//<library-host-ip>/bebop-music /mnt/bebop cifs guest,ro,vers=3.0,uid=metalshop,gid=metalshop,iocharset=utf8,_netdev,nofail,x-systemd.automount,x-systemd.device-timeout=10 0 0
+EOF
+sudo systemctl daemon-reload
+```
+
+**This hardcodes the library host's IP** -- if that machine's address
+ever changes (a router reset, a new DHCP lease), every machine's mount
+silently breaks (`ls /mnt/bebop` fails with "No such device") until
+`/etc/fstab` is updated to match on every machine and `daemon-reload`'d.
+Not part of any git repo, so it isn't caught by a normal fleet sync --
+worth checking directly (`mount | grep bebop`) any time fleet IPs have
+recently changed.
 
 Point MPD at the library and disable its software mixer (volume is
 external): edit `/etc/mpd.conf`'s `music_directory` to match
@@ -111,10 +132,12 @@ audio_output {
 }
 ```
 
-Then `sudo systemctl enable --now mpd`, `mpc update`, and start bebop
-via `/usr/local/bin/bebop` (installs itself onto tty1 if run from a
-real console, or via `sudo openvt` otherwise -- same launcher pattern
-as bars/loudness/channel38).
+Then `sudo systemctl enable --now mpd`, `mpc update`, and either start
+bebop by hand via `/usr/local/bin/bebop` (installs itself onto tty1 if
+run from a real console, or via `sudo openvt` otherwise -- same
+launcher pattern as bars/loudness/channel38), or, as part of a McBrain
+fleet, assign it through STRINGS/SCRUTE instead of launching it
+directly.
 
 ## Configuration
 
@@ -146,32 +169,18 @@ One module per concern, per the brief:
 
 ## Known gaps
 
-- **Not installed on McBrain yet** -- built and tested entirely on
-  `production` while the puppet fleet was down for hardware
-  maintenance. The USB drive and remote dongle are both physically on
-  `production` for this reason.
-- **Music library sharing**: the eventual plan is one puppet holding
-  the USB drive with the others mounting it over the network (NFS,
-  most likely); `config.toml`'s `music_directory` currently points at
-  a local mount (`/mnt/bebop`) since there's only one machine to test
-  on right now.
-- **Pi boot integration**: bebop is currently launched by hand
-  (`setsid -f /usr/local/bin/bebop`) for testing. Wiring it into
-  STRINGS as a real assignable app (`KNOWN_APPS`/`LAUNCH_COMMANDS`,
-  a `check_bebop_*` hw_check) hasn't been done.
 - **SCRUTE control-mode Back relay**: STRINGS's `/input` relay
-  allowlist now includes `KEY_BACK` (added specifically for bebop's
+  allowlist includes `KEY_BACK` (added specifically for bebop's
   internal "go up a level" navigation, unlike every other app's Back =
-  "exit"), but `scrutinizer.py`'s control-mode `_handle_control_mode_keycode`
-  still intercepts `KEY_BACK` unconditionally before it would ever
-  reach the relay branch. Needs its own follow-up change (make that
-  branch app-aware, or accept Home as control-mode's only exit while
-  targeting bebop) -- deliberately not done yet, since it changes
-  working behavior for every other app and MP is currently offline to
-  test against.
-- **`cover.jpg`/`folder.jpg` fallback untested**: every track in the
-  current 1093-song test library has embedded art, so this code path
-  has never actually run against a real file.
+  "exit"), but `scrutinizer.py`'s control-mode keycode handler still
+  intercepts `KEY_BACK` unconditionally before it would ever reach the
+  relay branch -- needs its own follow-up change (make that branch
+  app-aware, or accept Home as control-mode's only exit while
+  targeting bebop) to avoid changing working behavior for every other
+  app.
+- **`cover.jpg`/`folder.jpg` fallback lightly tested** -- most of the
+  current library has embedded art, so this code path sees limited
+  real-world exercise.
 - **No in-app playlist creation** -- Playlists browses whatever MPD
   already has saved; there's no "save current queue as a playlist"
   action in the UI yet.
