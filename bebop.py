@@ -43,6 +43,10 @@ import menu  # noqa: E402
 
 VERSION = menu.VERSION
 
+ORANGE = (0xFF, 0xA5, 0x00)  # matches the fleet's other splash version readouts
+SPLASH_VERSION_FONT_SIZE = 22
+SPLASH_VERSION_GAP = 20  # pixels between the bottom of the splash image and the version text
+
 KDSETMODE = 0x4B3A
 KD_TEXT = 0x00
 KD_GRAPHICS = 0x01
@@ -72,6 +76,14 @@ def find_keyboard_devices():
 
 
 def show_splash(fb, config):
+    """Matches the fleet's other splash screens (bars.py/loudness.py/
+    channel38.py/joanjett's main.py): the image plus a centered orange
+    VERSION line underneath it. Unlike those apps' native-resolution
+    splashes, bebop's source art is scale-to-fit within the safe area
+    (see the existing pixel_aspect_correction() comment below) -- so
+    the version line's height is reserved from that same safe area
+    *before* the image is scaled, rather than added as a fixed pixel
+    offset, and the whole image+text block is then centered together."""
     if not config.splash_path.exists():
         return
     try:
@@ -82,20 +94,30 @@ def show_splash(fb, config):
     canvas = pygame.Surface((config.width, config.height))
     canvas.fill((0, 0, 0))
     img_w, img_h = img.get_size()
+
+    version_font = pygame.font.Font(str(config.font_path), SPLASH_VERSION_FONT_SIZE)
+    version_surf = version_font.render(f"VERSION {VERSION}", True, ORANGE)
+
     # Fit within the safe area, not the full frame -- the splash was
     # bleeding past the top/bottom of the CRT's visible picture the
     # same as any other content would outside the underscan margin.
     margin_x = int(config.width * config.safe_area)
     margin_y = int(config.height * config.safe_area)
     safe_w = config.width - 2 * margin_x
-    safe_h = config.height - 2 * margin_y
+    safe_h = config.height - 2 * margin_y - SPLASH_VERSION_GAP - version_surf.get_height()
     # Pre-stretch horizontally for the buffer's non-square pixels (see
     # pixel_aspect_correction()) before fitting to the safe area, so the
     # final on-screen shape matches the source art's real proportions.
     corrected_w = img_w * pixel_aspect_correction(config)
     scale = min(safe_w / corrected_w, safe_h / img_h)
     scaled = pygame.transform.smoothscale(img, (int(corrected_w * scale), int(img_h * scale)))
-    canvas.blit(scaled, ((config.width - scaled.get_width()) // 2, (config.height - scaled.get_height()) // 2))
+
+    block_h = scaled.get_height() + SPLASH_VERSION_GAP + version_surf.get_height()
+    img_y = (config.height - block_h) // 2
+    canvas.blit(scaled, ((config.width - scaled.get_width()) // 2, img_y))
+    text_y = img_y + scaled.get_height() + SPLASH_VERSION_GAP
+    canvas.blit(version_surf, ((config.width - version_surf.get_width()) // 2, text_y))
+
     fb.write_surface(canvas)
     time.sleep(config.splash_seconds)
 
