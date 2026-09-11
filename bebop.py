@@ -44,6 +44,12 @@ import menu  # noqa: E402
 VERSION = menu.VERSION
 
 ORANGE = (0xFF, 0xA5, 0x00)  # matches the fleet's other splash version readouts
+# VCR OSD Mono, not bebop's own ChicagoKare -- per explicit user request
+# 2026-09-11, to match the other apps' splash version line font-for-font
+# (an earlier version of this used ChicagoKare for UI consistency with
+# the rest of bebop; overridden by this follow-up). Copied in from
+# /opt/bars's copy -- not otherwise used anywhere else in bebop.
+SPLASH_VERSION_FONT_PATH = Path(__file__).resolve().parent / "assets" / "VCR_OSD_MONO_1.001.ttf"
 SPLASH_VERSION_FONT_SIZE = 22
 SPLASH_VERSION_GAP = 20  # pixels between the bottom of the splash image and the version text
 
@@ -95,7 +101,7 @@ def show_splash(fb, config):
     canvas.fill((0, 0, 0))
     img_w, img_h = img.get_size()
 
-    version_font = pygame.font.Font(str(config.font_path), SPLASH_VERSION_FONT_SIZE)
+    version_font = pygame.font.Font(str(SPLASH_VERSION_FONT_PATH), SPLASH_VERSION_FONT_SIZE)
     version_surf = version_font.render(f"VERSION {VERSION}", True, ORANGE)
 
     # Fit within the safe area, not the full frame -- the splash was
