@@ -188,3 +188,13 @@ One module per concern, per the brief:
 - **No in-app playlist creation** -- Playlists browses whatever MPD
   already has saved; there's no "save current queue as a playlist"
   action in the UI yet.
+
+## Per-machine settings
+
+`settings.ini` is per-machine and not tracked in git (each fleet host keeps
+its own values, e.g. calibration or preferences), so `git pull` never
+conflicts with it. A fresh install copies the template first:
+
+    cp settings.example.ini settings.ini
+
+If `settings.ini` is missing, the app falls back to its built-in defaults.
