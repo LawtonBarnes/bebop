@@ -21,7 +21,7 @@ from mpd import MPDError
 from config import REPEAT_MODES, SHUFFLE_MODES, TEXT_COLORS
 from nowplaying import NowPlayingScreen
 
-VERSION = "1.1"  # bebop's own version, distinct from each app's VERSION convention elsewhere in the fleet
+VERSION = "1.2"  # bebop's own version, distinct from each app's VERSION convention elsewhere in the fleet
 
 ROOT_ITEMS = ["Playlists", "Artists", "Songs", "Settings"]
 SETTINGS_ITEMS = ["Shuffle", "Repeat", "Text Color", "About"]

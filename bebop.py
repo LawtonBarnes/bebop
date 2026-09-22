@@ -52,6 +52,9 @@ ORANGE = (0xFF, 0xA5, 0x00)  # matches the fleet's other splash version readouts
 SPLASH_VERSION_FONT_PATH = Path(__file__).resolve().parent / "assets" / "VCR_OSD_MONO_1.001.ttf"
 SPLASH_VERSION_FONT_SIZE = 22
 SPLASH_VERSION_GAP = 20  # pixels between the bottom of the splash image and the version text
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "metalshop-logo.png"  # ABOUT screen -- see draw_about_screen()
+BLACK = (0, 0, 0)
+WHITE = (0xFF, 0xFF, 0xFF)
 
 KDSETMODE = 0x4B3A
 KD_TEXT = 0x00
@@ -63,6 +66,58 @@ KD_GRAPHICS = 0x01
 EXIT_GOTO_HOME = 42
 
 MOUSE_MOVE_THRESHOLD = 12
+
+
+# ABOUT screen (2026-09-22, fleet-wide -- same layout in every app except
+# WX, duplicated per this codebase's no-shared-library convention). BACK
+# toggles it from the app's home level. Title top center, settings in the
+# middle, METAL SHOP logo bottom center. The logo is square-pixel art, so
+# it's stretched horizontally by 720/640 to look right on the CRT's
+# narrower-than-square 720x480 pixels.
+ABOUT_MARGIN_Y = 48  # keeps title/logo inside the CRT's visible area
+ABOUT_LINE_GAP = 8
+ABOUT_COLUMN_GAP = 16
+LOGO_X_STRETCH = 720 / 640
+
+
+def load_about_logo():
+    try:
+        img = pygame.image.load(str(LOGO_PATH)).convert_alpha()
+    except (pygame.error, OSError) as exc:
+        print(f"Logo load failed: {exc}", file=sys.stderr)
+        return None
+    w, h = img.get_size()
+    return pygame.transform.smoothscale(img, (round(w * LOGO_X_STRETCH), h))
+
+
+def draw_about_screen(canvas, title_font, body_font, logo, title, rows):
+    """`rows` is a list of (label, value) -- labels right-aligned in an
+    orange column, values left-aligned in white beside them, the block
+    centered in the space between the title and the logo. A row with an
+    empty label continues the previous row's value column."""
+    frame_w, frame_h = canvas.get_size()
+    canvas.fill(BLACK)
+    title_surf = title_font.render(title, True, ORANGE)
+    canvas.blit(title_surf, ((frame_w - title_surf.get_width()) // 2, ABOUT_MARGIN_Y))
+    top = ABOUT_MARGIN_Y + title_surf.get_height()
+    bottom = frame_h - ABOUT_MARGIN_Y
+    if logo is not None:
+        bottom -= logo.get_height()
+        canvas.blit(logo, ((frame_w - logo.get_width()) // 2, bottom))
+    if not rows:
+        return
+    label_surfs = [body_font.render(label, True, ORANGE) if label else None for label, _ in rows]
+    value_surfs = [body_font.render(str(value), True, WHITE) for _, value in rows]
+    label_w = max((l.get_width() for l in label_surfs if l), default=0)
+    value_w = max(v.get_width() for v in value_surfs)
+    line_h = body_font.get_linesize() + ABOUT_LINE_GAP
+    x0 = (frame_w - (label_w + ABOUT_COLUMN_GAP + value_w)) // 2
+    y = top + (bottom - top - line_h * len(rows)) // 2
+    for label_surf, value_surf in zip(label_surfs, value_surfs):
+        if label_surf:
+            canvas.blit(label_surf, (x0 + label_w - label_surf.get_width(), y))
+        canvas.blit(value_surf, (x0 + label_w + ABOUT_COLUMN_GAP, y))
+        y += line_h
 
 
 def find_keyboard_devices():
@@ -179,6 +234,11 @@ class BebopApp:
         self.pending_exit_code = 0
         self._rel_accum = {"x": 0, "y": 0}
 
+        self.about_title_font = pygame.font.Font(str(SPLASH_VERSION_FONT_PATH), 36)
+        self.about_body_font = pygame.font.Font(str(SPLASH_VERSION_FONT_PATH), 26)
+        self.about_logo = load_about_logo()
+        self.about_active = False
+
     def _handle_signal(self, signum, frame):
         self._quit_requested = True
 
@@ -247,6 +307,17 @@ class BebopApp:
 
     def render(self):
         canvas = self.renderer.new_canvas()
+        if self.about_active:
+            s = self.settings
+            draw_about_screen(canvas, self.about_title_font, self.about_body_font, self.about_logo,
+                              f"BEBOP {VERSION}", [
+                                  ("MEDIA", str(self.config.music_directory)),
+                                  ("SHUFFLE", s.shuffle.upper()),
+                                  ("REPEAT", s.repeat.upper()),
+                                  ("TEXT COLOR", s.text_color.upper()),
+                              ])
+            self.fb.write_surface(canvas)
+            return
         self.current_screen.render(self.renderer, canvas, self.settings.color)
         self.fb.write_surface(canvas)
 
@@ -257,6 +328,16 @@ class BebopApp:
         "quit_home" for the special exit paths, or False if unhandled."""
         if code in (ecodes.KEY_HOMEPAGE, ecodes.KEY_HOME):
             return "quit_home"
+        elif self.about_active:
+            # ABOUT (2026-09-22) is modal -- Back closes it, Q/Esc/
+            # hamburger still quit, everything else is ignored so
+            # nothing changes unseen behind it.
+            if code == ecodes.KEY_BACK:
+                self.about_active = False
+            elif code in (ecodes.KEY_Q, ecodes.KEY_ESC, ecodes.KEY_COMPOSE):
+                return "quit"
+            else:
+                return False
         elif code == ecodes.KEY_COMPOSE and isinstance(self.current_screen, (NowPlayingScreen, AlbumArtScreen)):
             # Hamburger's normal fleet-wide meaning ("open the app
             # menu") doesn't apply inside bebop -- repurposed here,
@@ -291,10 +372,14 @@ class BebopApp:
         elif code in (ecodes.KEY_ENTER, ecodes.KEY_KPENTER, ecodes.BTN_LEFT, ecodes.BTN_MOUSE):
             self.current_screen.select(self)
         elif code == ecodes.KEY_BACK:
-            # True iPod behavior: Back goes up one menu level, and is a
-            # no-op at the root -- there's nowhere higher to go.
+            # True iPod behavior: Back goes up one menu level. At the
+            # root, where there's nowhere higher to go, it opens the
+            # fleet-wide ABOUT screen instead (2026-09-22, was a no-op).
             # Exiting bebop entirely is Home/Q/Esc, handled above.
-            self.pop_screen()
+            if len(self.stack) > 1:
+                self.pop_screen()
+            else:
+                self.about_active = True
         elif code == ecodes.KEY_VOLUMEDOWN:
             # Mute the line-level output -- works from any screen, not
             # just Now Playing/Album Art (see _set_line_out_mute).
