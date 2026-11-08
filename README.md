@@ -1,5 +1,7 @@
 # bebop
 
+> **Standalone:** runs on a single Raspberry Pi with MPD and a music folder (local, or a network share as in the fleet setup). Fleet integration is optional.
+
 An iPod-style MP3 player interface for a Raspberry Pi 3B+ driving a
 4:3 CRT over composite video. Recreates the menu hierarchy, monochrome
 look, and navigation of a first-generation iPod, plus one feature the
