@@ -28,7 +28,10 @@ import evdev
 from evdev import ecodes
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "alsa")
+# pygame never plays sound here -- MPD does. With "alsa", pygame.init()
+# opened the card itself, and on a Pi 5 (vc4-hdmi: one PCM subdevice)
+# that locked MPD out ("Device or resource busy"), so nothing played.
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
